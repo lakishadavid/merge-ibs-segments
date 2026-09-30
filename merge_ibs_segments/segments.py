@@ -20,7 +20,9 @@
 # Modified by LaKisha T. David, September 29-30, 2026: translated from Java to
 # Python from src/ibdutil/StringIdSegment.java in refined-ibd.17Jan20.102.zip
 # (SHA-256 0b0abf48528ec53d3fec7f21a9742c6e5960857c5a225b0e49346179bc45e6ea).
-# Later changes are recorded in the Git history.
+# On September 30, 2026, haplotype 0 ceased to be accepted, for the
+# haplotype-specific merging rule (see README). Later changes are recorded in
+# the Git history.
 #
 # Brian L. Browning's original notice, reproduced unchanged from those files:
 #
@@ -43,9 +45,11 @@
 """IBD segments, converted from ibdutil.StringIdSegment.
 
 A Refined IBD segment line has 8 or 9 white-space separated fields: sample 1,
-haplotype of sample 1 (1 or 2; 0 = unknown), sample 2, haplotype of sample 2,
+haplotype of sample 1 (1 or 2), sample 2, haplotype of sample 2,
 chromosome, start position, end position (both inclusive), LOD score and,
-optionally, length in cM.
+optionally, length in cM.  Browning's program also accepts haplotype 0
+("unknown", which it writes for joined segments); this program does not,
+because its merging rule needs each segment's haplotypes.
 """
 
 from __future__ import annotations
@@ -89,7 +93,8 @@ class Segment:
 
 
 def _check_haplotype(hap: int) -> None:
-    if hap != 0 and hap != 1 and hap != 2:
+    """Accepts haplotypes 1 and 2 (Browning's check also accepts 0)."""
+    if hap != 1 and hap != 2:
         raise illegal_argument("invalid hap: " + str(hap))
 
 

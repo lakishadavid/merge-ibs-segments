@@ -1,39 +1,64 @@
 # merge-ibs-segments
 
-A Python translation of `merge-ibd-segments`, the program that joins broken IBD
-segments in the output of Brian L. Browning's
-[Refined IBD](https://faculty.washington.edu/browning/refined-ibd.html)
-(version 17Jan20.102).
+Joins broken IBD segments in the output of Brian L. Browning's
+[Refined IBD](https://faculty.washington.edu/browning/refined-ibd.html) while
+keeping haplotypes apart: two segments of a pair of samples are joined only if
+they are on the same haplotype of each sample.
 
-**Status.** The current code (tag `baseline-faithful`) is a faithful
-translation: it behaves like `merge-ibd-segments.17Jan20.102.jar`, as shown by
-the exact-conversion test described below. A merging rule that keeps
-haplotypes apart is in development and is not in this version.
+It began as an exact Python translation of Browning's `merge-ibd-segments`
+(version 17Jan20.102), kept as the tag `baseline-faithful` and checked against
+the original program (see "Verification"). The current version replaces that
+program's merging rule: haplotype 0 is rejected and the usage message
+describes the new rule. Everything else (VCF and map reading, genetic-map
+calculations, number formatting, other messages) is unchanged from the
+baseline, except the index named when a sample absent from the VCF file takes
+part in a gap test (see "Known and accepted").
 
 ## What it does
 
-For each pair of samples, the IBD segments are sorted and walked in order. A
-segment joins the current chain if it is on the same chromosome and either
+The segments of each pair of samples are grouped by the haplotype of sample 1
+and the haplotype of sample 2. Within each group they are sorted and walked in
+order. A segment joins the current chain if it is on the same chromosome and
+either
 
-- starts at or before the chain's running end (overlapping segments, and
-  segments that start at the running end position, are joined without any
-  test), or
-- is separated from the chain by a gap of at most `[gap]` cM that contains at
-  most `[discord]` markers at which the two samples share no allele.
+- starts before the chain's running end (an overlapping or nested segment of
+  the same haplotype pair joins without any test), or
+- starts at or after the running end, and the gap passes both tests:
+  - its length, measured with the genetic map from the marker at the chain's
+    running end to the marker at the segment's start, is at most `[gap]` cM
+    (a segment that starts at the running end has a gap of length zero and
+    is always tested, even a one-marker segment inside the chain, which a
+    minimum segment length rules out in practice);
+  - it contains at most `[discord]` discordant markers, counting both of
+    those markers. A marker is discordant when sample 1's allele on sample 1's
+    haplotype differs from sample 2's allele on sample 2's haplotype. The
+    samples' other haplotypes are not considered.
 
-The gap is measured with the genetic map, from the marker at the chain's
-running end to the marker at the next segment's start, and both of those
-markers are included in the discordance count. Both positions must be markers
-in the VCF file. Otherwise the program stops with "position missing from VCF
-file", which, as in the Java program, gives the chromosome as a 0-based index
-in map order and, for the next segment, its end position.
+A segment of another haplotype pair lying in the gap does not prevent a join,
+and segments of different haplotype pairs are never joined, even where they
+overlap. Both gap positions must be markers in the VCF file. Otherwise the
+program stops with "position missing from VCF file", which, as in Browning's
+program, gives the chromosome as a 0-based index in map order and, for the
+next segment, its end position.
 
-Each chain is written as one segment: its haplotype indices are 0 if it joined
-more than one segment, its score is the largest score in the chain, and its
-length is recomputed from the map. Beyond either end of the map, positions are
-extrapolated along the line through the end point and the nearest map point
-at least 5 cM inside it (the other end of the map if the map spans less than
-5 cM).
+Each chain is written as one segment, with the group's haplotype numbers, the
+largest score in the chain, and its length recomputed from the map. Beyond
+either end of the map, positions are extrapolated along the line through the
+end point and the nearest map point at least 5 cM inside it (the other end of
+the map if the map spans less than 5 cM).
+
+### How the rule differs from Browning's merge-ibd-segments
+
+| | Browning's program | This program |
+|---|---|---|
+| Segments that may be joined | any segments of the pair | only segments with the same haplotype of each sample |
+| A segment that starts at the running end | joined without a test | tested as a gap of length zero (so that position must be a VCF marker) |
+| Discordant marker | no allele of sample 1 equals either allele of sample 2 (the genotypes share no allele) | sample 1's allele on its haplotype differs from sample 2's allele on its haplotype |
+| Haplotype 0 in the input | accepted | rejected |
+| Haplotypes of a joined segment | written as 0 | kept |
+
+The gap length test and its limits, the running-end walk, the largest score
+and the length from the map are Browning's.
 
 ## Use
 
@@ -56,17 +81,49 @@ gunzip -c out.ibd.gz | python -m merge_ibs_segments phased.vcf.gz plink.map 0.6 
 
 The Refined IBD web page describes removing gaps that are shorter than 0.6 cM
 and have at most one discordant homozygote, which corresponds approximately to
-`0.6 1` (this program also joins a gap of exactly `[gap]` cM, and counts the
-two boundary markers).
+`0.6 1` in Browning's program. Those values were given for his genotype-based
+discordance test; they have not been calibrated for this program's
+haplotype-based test.
 
 Output: one line per chain, 9 tab-separated fields in the input's order, with
 the score written with at most 2 decimals and the length with at most 3.
 
-## How closely it matches the Java program
+## Verification
 
-`tests/parity/run_parity.py` runs the original jar and this program on the
-same inputs and compares them. Successful runs must give the same output
-lines (order aside). Failing runs must give the same exit status and the same
+### Tests of the rule (`tests/rule`)
+
+`tests/rule/test_rule.py` checks the rule on synthetic data:
+
+- a pair keeps its haplotype numbers across a qualifying gap and is joined
+  (for A1–B1 and A1–B2), and the joined segment keeps those numbers;
+- a change of haplotype in sample 1, in sample 2, or in both, prevents a join;
+- a segment of another haplotype pair spanning the gap does not prevent a
+  join, and overlapping segments of different haplotype pairs are not joined;
+- a gap of exactly `[gap]` cM is joined and is not joined when `[gap]` is one
+  double smaller; exactly `[discord]` discordant markers are allowed and one
+  more is not;
+- only the respective haplotypes count as discordant, for sample 1 and for
+  sample 2;
+- a shared endpoint is tested as a gap of length zero, and must be a VCF
+  marker; a segment starting at the running end is always tested;
+- overlapping and nested segments of the same haplotype pair are joined, and
+  the gap after a nested segment is measured from the chain's running end;
+- chains of several segments, shuffled input, the output order, separate
+  chromosomes, haplotype 0 (rejected), lengths extrapolated before and after
+  the map, and number rounding;
+- 30 seeded random data sets, compared with a separate implementation of the
+  rule written for the test, and rerun in a second input order.
+
+All 23 tests pass with Python 3.12 and 3.13.
+
+### Exact-conversion test of the baseline (`tests/parity`)
+
+This test applies to the tag `baseline-faithful`, the exact translation of
+Browning's program; the current version differs from the jar by its merging
+rule and usage text. `tests/parity/run_parity.py` runs the original jar and
+the baseline on the same inputs and compares them. Successful runs must give
+the same output lines (order aside). Failing runs must give the same exit
+status and the same
 standard output and error after the normalisations listed in `run_parity.py`:
 Java stack-trace frame lines, exceptions re-thrown from Java's parallel VCF
 parsing, Java object identity hashes, the usage text's command name, segment
@@ -90,7 +147,9 @@ identical results and 2 show the known differences listed below. The full
 record, with checksums of the jar and of every source file, is in
 [`tests/parity/parity_record.md`](tests/parity/parity_record.md).
 
-### Differences from the Java program
+### Other differences from Browning's program
+
+These apply to the baseline and to the current version.
 
 By design:
 
@@ -101,8 +160,8 @@ By design:
 - The whole output is written at the end. If the program stops with an error,
   no segments are written; the Java program may already have written some.
 - Output lines end with `\n`. The Java program uses the platform's line
-  separator, so the two agree where that is `\n` (Linux, where the test ran,
-  and macOS), not on Windows.
+  separator, so the two agree where that is `\n` (Linux, where the
+  exact-conversion test ran, and macOS), not on Windows.
 - An error that Java re-throws from its parallel VCF parsing is reported once,
   as the original exception.
 - Java object identity hashes (for example `@76ed5528`) are not printed.
@@ -121,9 +180,11 @@ Known and accepted:
   on how the Java program stored the genotypes, it either stops at a bounds
   check or reads one element past its genotype array, and then stops with an
   index exception. In the test both programs stopped with
-  `IndexOutOfBoundsException`, naming index 9 (Java) and 8 (this program).
+  `IndexOutOfBoundsException`, naming index 9 (Java) and 8 (the baseline).
+  The current version names the index of the haplotype it reads
+  (2 × sample + haplotype − 1).
 
-Not tested:
+Not compared with the jar:
 
 - The messages for a damaged BGZF file.
 - VCF files with more than one error: the Java program reads and parses a VCF
@@ -132,10 +193,17 @@ Not tested:
 - Java versions other than 25.0.4.1; operating systems other than Linux;
   Python versions other than 3.12.
 
-## Running the exact-conversion test
+## Running the tests
 
-The test needs Java and the original program, which is not distributed here.
-Download them from Browning's site:
+The rule tests need only Python. From the repository root:
+
+```
+python -m unittest discover -s tests/rule
+```
+
+The exact-conversion test applies to the baseline, so check out its tag first
+(`git checkout baseline-faithful`). It needs Java and the original program,
+which is not distributed here. Download them from Browning's site:
 
 - `https://faculty.washington.edu/browning/refined-ibd/merge-ibd-segments.17Jan20.102.jar`
   (SHA-256 `f5a8e8d094e99fa8226e8489e2b55e4a2bc89b325c49de19501395b15769dc80`)
@@ -179,7 +247,7 @@ this repository's GitHub issues.
 If you use this software in published work, please cite both:
 
 - this repository, with the version (tag or commit) you used, for example:
-  David LT. merge-ibs-segments, version baseline-faithful [software].
+  David LT. merge-ibs-segments, commit `<hash>` [software].
   https://github.com/lakishadavid/merge-ibs-segments
 - the Refined IBD paper, for Refined IBD and the original merge-ibd-segments
   program: Browning BL, Browning SR (2013). Improving the accuracy and

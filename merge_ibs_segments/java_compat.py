@@ -624,10 +624,12 @@ def java_decimal_format(x: float, maximum_fraction_digits: int) -> str:
       the pattern allows prints that form (Python's ``repr``) padded with
       zeros, not its rounded exact binary value; the jar does the same,
       including for values from 2**43 to 2**53 (observed).
-    - For integers of 2**53 and above the jar prints other digits (for
+    - For some integers of 2**53 and above the jar prints other digits (for
       example 2**60 as ``1152921504606846980`` and 1e23 as
-      ``99999999999999990000000``); this conversion does not reproduce
-      those.
+      ``99999999999999990000000``); both forms convert back to the same
+      number.  This conversion does not reproduce the jar's digits there: in
+      the exact-conversion test 169 of 1,794 such values printed
+      differently, the smallest about 1.84e16.
     """
     if x != x:
         return "NaN"

@@ -26,6 +26,10 @@
 """Exact-conversion test: runs Browning's merge-ibd-segments jar and this
 Python conversion on the same synthetic inputs and compares them.
 
+This test applies to the tag baseline-faithful, the exact translation.  Later
+versions replace the merging rule and differ from the jar by design; check out
+the tag before running it.
+
 Usage (inside a container that has Java and the reference jar):
 
     python tests/parity/run_parity.py --jar /path/merge-ibd-segments.17Jan20.102.jar \

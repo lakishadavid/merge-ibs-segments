@@ -23,7 +23,9 @@
 # src/vcf/LowMafRefDiallelicGT.java (including where it ends the program
 # through Utilities.exit, which is translated in java_compat.py) in
 # refined-ibd.17Jan20.102.zip (SHA-256
-# 0b0abf48528ec53d3fec7f21a9742c6e5960857c5a225b0e49346179bc45e6ea). Later
+# 0b0abf48528ec53d3fec7f21a9742c6e5960857c5a225b0e49346179bc45e6ea). On
+# September 30, 2026, Browning's merging rule was replaced by one that joins
+# only segments on the same haplotype of each sample (see README). Later
 # changes are recorded in the Git history.
 #
 # Brian L. Browning's original notice, reproduced unchanged from those files:
@@ -44,22 +46,45 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-"""The program, converted from ibdutil.MergeIbdSegments (see the notice above
-for the other files it draws on).
+"""The program: joins IBD segments of the same pair of samples that are on
+the same haplotype of each sample.  Translated from ibdutil.MergeIbdSegments
+(see the notice above for the other files it draws on), with its merging
+rule replaced.
 
 Usage: ``cat [in] | python -m merge_ibs_segments [vcf] [map] [gap] [discord]
 > [out]``.
 
-The IBD segments of each pair of samples are sorted and walked in order.  A
-segment joins the current chain if it is on the same chromosome and either
-starts at or before the chain's running end, or is separated from it by a
-gap of at most [gap] cM containing at most [discord] markers at which the
-two samples share no allele.  Each chain is written as one segment: its
-haplotypes are 0 if it has more than one segment, its score is the largest
-score in the chain, and its length is recomputed from the genetic map.
+The IBD segments of each pair of samples are grouped by the haplotype of
+sample 1 and the haplotype of sample 2 (1 or 2; haplotype 0 is rejected).
+Within each group the segments are sorted as Browning's
+StringIdSegment.compareTo sorts them and walked in order.  A segment joins
+the current chain if it is on the same chromosome and either
 
-Differences from the Java program's output, by design:
+- starts before the chain's running end (an overlapping or nested segment of
+  the same haplotype pair), or
+- starts at or after the running end, and the gap, measured with the genetic
+  map from the marker at the running end to the marker at the segment's start
+  (zero when they are the same position), is at most [gap] cM and contains at
+  most [discord] discordant markers, both end markers included.  A marker is
+  discordant when sample 1's allele on sample 1's haplotype differs from
+  sample 2's allele on sample 2's haplotype; the samples' other haplotypes are
+  not considered.  A segment that starts at the running end is always tested
+  this way, even a one-marker segment lying inside the chain (which a minimum
+  segment length of more than zero rules out in practice).
 
+A segment of another haplotype group lying in the gap does not prevent a
+join.  Each chain is written as one segment, with the group's haplotypes, the
+largest score in the chain, and its length recomputed from the genetic map.
+
+Differences from Browning's merge-ibd-segments, of which the tag
+baseline-faithful is an exact translation:
+
+- Merging rule.  Browning's program joins segments of a pair whatever their
+  haplotypes; joins a segment that starts at the running end without a gap
+  test; counts a marker as discordant only when no allele of sample 1 equals
+  either allele of sample 2 (the genotypes share no allele); accepts
+  haplotype 0 in its input; and writes haplotype 0 for every joined segment.
+- The usage message describes this program's rule.
 - Output lines are sorted by chromosome (in order of first appearance in the
   genetic map), start, end, score, sample 1, sample 2, haplotype 1 and
   haplotype 2.  The Java program writes pairs in java.util.HashMap order.
@@ -67,18 +92,18 @@ Differences from the Java program's output, by design:
   program may already have written some segments before stopping.
 - Java stack trace frame lines are not written.
 - Output lines end with ``\\n``.  The Java program ends them with the
-  platform's line separator, so the outputs agree where that is ``\\n``
-  (Linux, where the exact-conversion test ran, and macOS), not on Windows.
+  platform's line separator.
 
-Known differences found by the exact-conversion test (tests/parity), outside
-the range of real scores and lengths:
+Known differences found by the baseline's exact-conversion test
+(tests/parity), outside the range of real scores and lengths:
 
-- Numbers of 2**53 (about 9.0e15) and above print with their shortest
-  decimal digits; the jar prints other digits (java_compat.java_decimal_format).
+- Some numbers of 2**53 (about 9.0e15) or more print with other digits than
+  the jar's (java_compat.java_decimal_format).
 - A gap test for a sample that is in the IBD input but not in the VCF file:
-  the jar reads outside its genotype arrays, and what it then does depends
-  on how it stored the genotypes; this conversion stops with
-  IndexOutOfBoundsException.
+  depending on how the jar stored the genotypes, it stops at a bounds check or
+  reads one element past its genotype array.  This program stops with
+  IndexOutOfBoundsException, naming the index of the haplotype it reads
+  (2 x sample + haplotype - 1; the baseline named 2 x sample).
 """
 
 from __future__ import annotations
@@ -103,32 +128,39 @@ PROGRAM = "python -m merge_ibs_segments"
 
 
 def usage() -> str:
-    """``MergeIbdSegments.usage()``, with this program's command."""
+    """The usage message, laid out as ``MergeIbdSegments.usage()``."""
     nl = "\n"
     return (nl
             + "usage: cat [in] | " + PROGRAM
             + " [vcf] [map] [gap] [discord] > [out]" + nl
             + nl
             + "where" + nl
-            + "  [in]      = IBD output file from Refined IBD analysis" + nl
+            + "  [in]      = IBD output file from Refined IBD analysis "
+              "(uncompressed)" + nl
             + "  [vcf]     = Phased input VCF file from Refined IBD analysis"
             + nl
             + "  [map]     = PLINK format genetic map file with centimorgan "
               "(cM) distances" + nl
             + "  [gap]     = max length of gap between IBD segments (cM)" + nl
-            + "  [discord] = max number of genotypes in IBD gap that are "
-              "inconsistent with IBD" + nl
+            + "  [discord] = max number of markers in the gap at which the "
+              "two IBD haplotypes" + nl
+            + "              carry different alleles" + nl
             + "  [out]     = IBD output file with IBD segments after merging"
             + nl
             + nl
-            + "IBD segments for a pair of sample are merged if they overlap "
-              "or if they are" + nl
-            + "separated by a gap having length <= [gap] cM and having <= "
-              "[discord] genotypes" + nl
-            + "inconsistent with IBD.  Merged segments will have haplotype "
-              "indices set to 0" + nl
-            + "and have IBD score equal to the maximal score of the merged "
-              "segments." + nl)
+            + "IBD segments for a pair of samples are merged only if they are "
+              "on the same" + nl
+            + "haplotype of each sample.  Such segments are merged if the "
+              "later one starts" + nl
+            + "before the earlier one ends, or if they are separated by a gap "
+              "(or share an end" + nl
+            + "position) having length <= [gap] cM and having <= [discord] "
+              "markers at which" + nl
+            + "the two haplotypes carry different alleles.  Merged segments "
+              "keep their" + nl
+            + "haplotype indices and have IBD score equal to the maximal "
+              "score of the merged" + nl
+            + "segments." + nl)
 
 
 def exit_with_error(message: str) -> JavaTermination:
@@ -207,37 +239,41 @@ class Data:
                                          start_marker.pos)
         return end_pos - start_pos
 
-    def ibd_discord_cnt(self, sample1: int, sample2: int, start_index: int,
-                        end_index: int) -> int:
-        """``Data.ibdDiscordCnt``: the markers from ``start_index`` to
-        ``end_index`` inclusive at which neither allele of sample 1 equals
-        either allele of sample 2."""
+    def haplotype_discord_cnt(self, sample1: int, hap1: int, sample2: int,
+                              hap2: int, start_index: int,
+                              end_index: int) -> int:
+        """The markers from ``start_index`` to ``end_index`` inclusive at
+        which sample 1's allele on haplotype ``hap1`` differs from sample 2's
+        allele on haplotype ``hap2`` (haplotypes 1 and 2 are the first and
+        second alleles of the phased genotype).  Replaces Browning's
+        ``Data.ibdDiscordCnt``, which counts a marker only when no allele of
+        sample 1 equals either allele of sample 2."""
         if start_index > end_index:
             raise illegal_argument("startIndex=" + str(start_index)
                                    + " endIndex=" + str(end_index))
         n_samples = self.header.n_samples
-        for sample in (sample1, sample2):
+        for sample, hap in ((sample1, hap1), (sample2, hap2)):
             if sample >= n_samples:
-                # GTRec.allele1(sample) for a sample that is not in the VCF.
+                # A sample that is not in the VCF file has no alleles.
                 raise JavaException("java.lang.IndexOutOfBoundsException",
-                                    str(2 * sample))
+                                    str(2 * sample + hap - 1))
         discord_cnt = 0
         for m in range(start_index, end_index + 1):
             rec = self.recs[m]
-            a1 = rec.allele1[sample1]
-            a2 = rec.allele2[sample1]
-            b1 = rec.allele1[sample2]
-            b2 = rec.allele2[sample2]
-            if a1 != b1 and a1 != b2 and a2 != b1 and a2 != b2:
+            a = (rec.allele1 if hap1 == 1 else rec.allele2)[sample1]
+            b = (rec.allele1 if hap2 == 1 else rec.allele2)[sample2]
+            if a != b:
                 discord_cnt += 1
         return discord_cnt
 
 
 def read_segments(lines, header: VcfHeader, sample_ids: Indexer,
-                  chrom_ids: Indexer) -> Dict[Tuple[int, int], List[Segment]]:
-    """``MergeIbdSegments.readSegments``: segments grouped by sample pair,
-    in order of first appearance."""
-    pairs: Dict[Tuple[int, int], List[Segment]] = {}
+                  chrom_ids: Indexer) -> Dict[Tuple[int, int, int, int],
+                                              List[Segment]]:
+    """``MergeIbdSegments.readSegments``, with segments grouped by sample
+    pair and by the haplotype of each sample, in order of first
+    appearance."""
+    pairs: Dict[Tuple[int, int, int, int], List[Segment]] = {}
     for raw in lines:
         line = java_trim(raw)
         if len(line) > 0:
@@ -246,7 +282,7 @@ def read_segments(lines, header: VcfHeader, sample_ids: Indexer,
             s2 = segment.sample_index2
             if header.sample_index(s1) > header.sample_index(s2):
                 raise illegal_argument("Inconsistency in sample order:" + line)
-            key = (s1, s2)
+            key = (s1, s2, segment.hap1, segment.hap2)
             group = pairs.get(key)
             if group is None:
                 group = []
@@ -257,13 +293,16 @@ def read_segments(lines, header: VcfHeader, sample_ids: Indexer,
 
 def merge_with_list(to_merge: List[Segment], nxt: Segment, max_end: int,
                     data: Data, max_gap: float, max_discord: int) -> bool:
-    """``MergeIbdSegments.mergeWithList``."""
+    """``MergeIbdSegments.mergeWithList`` with the haplotype rule.  All
+    segments in ``to_merge`` and ``nxt`` belong to one haplotype group.  A
+    segment that starts before the running end joins without a test; one
+    that starts at the running end is tested as a zero-length gap."""
     if not to_merge:
         return True
     last = to_merge[-1]
     if last.chrom_index != nxt.chrom_index:
         return False
-    if nxt.start <= max_end:
+    if nxt.start < max_end:
         return True
     gap_start = data.marker_index(last.chrom_index, max_end)
     gap_end = data.marker_index(nxt.chrom_index, nxt.start)
@@ -277,8 +316,9 @@ def merge_with_list(to_merge: List[Segment], nxt: Segment, max_end: int,
     gap_length = data.gen_distance(gap_start, gap_end)
     if gap_length > max_gap:
         return False
-    discord_cnt = data.ibd_discord_cnt(last.sample_index1, last.sample_index2,
-                                       gap_start, gap_end)
+    discord_cnt = data.haplotype_discord_cnt(
+        last.sample_index1, last.hap1, last.sample_index2, last.hap2,
+        gap_start, gap_end)
     return discord_cnt <= max_discord
 
 
@@ -286,8 +326,8 @@ def print_and_clear_list(data: Data, to_merge: List[Segment],
                          sample_ids: Indexer,
                          chrom_ids: Indexer) -> Tuple[Tuple, str]:
     """``MergeIbdSegments.printAndClearList``: the output line for the chain
-    (with its sort key), and the chain emptied."""
-    is_merged_segment = len(to_merge) > 1
+    (with its sort key), and the chain emptied.  The chain keeps its group's
+    haplotypes; Browning's program writes 0 for a joined segment."""
     first = to_merge[0]
     score = -DOUBLE_MAX
     start = INT_MAX
@@ -302,8 +342,8 @@ def print_and_clear_list(data: Data, to_merge: List[Segment],
     start_pos = data.gen_map.gen_pos(first.chrom_index, start)
     end_pos = data.gen_map.gen_pos(first.chrom_index, end)
     gen_length = end_pos - start_pos
-    hap1 = 0 if is_merged_segment else first.hap1
-    hap2 = 0 if is_merged_segment else first.hap2
+    hap1 = first.hap1
+    hap2 = first.hap2
     line = "\t".join((sample_ids.id(first.sample_index1), str(hap1),
                       sample_ids.id(first.sample_index2), str(hap2),
                       chrom_ids.id(first.chrom_index), str(start), str(end),
